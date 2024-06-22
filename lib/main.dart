@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:fimber_io/fimber_io.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:neko_launcher_neo/src/timer.dart';
 import 'package:neko_launcher_neo/src/games.dart';
 import 'package:neko_launcher_neo/src/stylesheet.dart';
 import 'package:neko_launcher_neo/src/settings.dart';
@@ -69,6 +70,10 @@ void main() async {
   } else {
     Fimber.i("User is not logged in.");
   }
+
+  // AppTimer setup
+  Timer.setup();
+
   runApp(const MyApp());
 }
 
@@ -253,6 +258,12 @@ class Home extends StatelessWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
+  @override
+  void dispose() {
+    Timer.instance.stop();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     Fimber.i("Building the MainScreen (layout) widget.");

@@ -13,6 +13,8 @@ import 'package:neko_launcher_neo/src/vndb.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:neko_launcher_neo/main.dart';
+import 'package:neko_launcher_neo/src/timer.dart';
+import 'package:neko_launcher_neo/src/social.dart';
 import 'package:neko_launcher_neo/src/daemon.dart';
 import 'package:neko_launcher_neo/src/stylesheet.dart';
 
@@ -22,9 +24,14 @@ class UpdateException implements Exception {
 }
 
 class Game extends ChangeNotifier {
+  static Set<Game> runningGames = <Game>{};
+  static int _nextId = 0;
+
+  late final int id;
   late String path;
   String name = "Name missing";
   String exec = "";
+  String? launchExec = null;
   String bg = "";
   String desc = "No description.";
   int time = 0;
@@ -40,7 +47,10 @@ class Game extends ChangeNotifier {
 
   final datePattern = DateFormat("yyyy-MM-dd");
 
+  DateTime? startTime;
+
   Game(this.path, {bool lazy = false}) {
+    this.id = _nextId++;
     Fimber.i("Creating game object from JSON $path");
     update(lite: lazy);
   }
@@ -70,12 +80,62 @@ class Game extends ChangeNotifier {
     bgKey.currentState!.updateSummary();
   }
 
+  @override
+  void dispose() {
+    stopped();
+    super.dispose();
+  }
+
   void resolveImageProvider() {
     if (bg.startsWith("http")) {
       imgProvider = NetworkImage(bg);
     } else {
       imgProvider = FileImage(File(bg));
     }
+  }
+
+  void started() {
+    if (startTime == null) {
+      // In case if the stopped method was not triggered, do not override the start time.
+      // It will be consumed on application close
+      startTime = DateTime.now();
+    }
+    userProfile?.updateActivity(ActivityType.game, details: name);
+    runningGames.add(this);
+    Fimber.i("(Game: ${name}) Started");
+    notifyListeners();
+  }
+
+  void stopped() {
+    if (startTime == null) {
+      return;
+    }
+
+    final end = DateTime.now();
+    final diff = end.difference(startTime!);
+    Fimber.i("(Game: ${name}) Finished in ${diff.inSeconds}s");
+    time += diff.inSeconds;
+
+    final activityKey = datePattern.format(startTime!);
+    if (activity.containsKey(activityKey)) {
+      activity[activityKey] += diff.inSeconds;
+    } else {
+      activity[activityKey] = diff.inSeconds;
+    }
+    save();
+
+    runningGames.remove(this);
+    if (runningGames.isEmpty) {
+      // No other games are running
+      userProfile?.updateActivity(ActivityType.online);
+    } else {
+      // Ensure user activity reflects a running game. Set to latest game
+      userProfile?.updateActivity(ActivityType.game, details: runningGames.last.name);
+    }
+
+    notifyListeners();
+
+    startTime = null;
   }
 
   void updateActivity() {
@@ -98,6 +158,7 @@ class Game extends ChangeNotifier {
       var json = jsonDecode(File(path).readAsStringSync());
       name = json["name"] ?? "Untitled game";
       exec = json["exec"];
+      launchExec = json["launch_exec"];
       bg = json["bg"] ?? "";
       desc = json["desc"] ?? "";
       time = json["time"] ?? 0;
@@ -137,6 +198,7 @@ class Game extends ChangeNotifier {
     var json = {
       "name": name,
       "exec": exec,
+      "launch_exec": launchExec,
       "bg": bg,
       "desc": desc,
       "time": time,
@@ -190,6 +252,7 @@ class Game extends ChangeNotifier {
             TextButton(
               child: const Text("Yes", style: Styles.bold),
               onPressed: () {
+                stopped(); // Ensure it is not in runningGames
                 Fimber.i("(Game: $name) Deleting.");
                 File(path).deleteSync();
                 Navigator.of(context).pop();
@@ -336,6 +399,15 @@ class GameButtonState extends State<GameButton> {
                                   ),
                                 ]),
                           ),
+                          AnimatedOpacity(
+                            duration: Styles.duration,
+                            opacity: widget.game.startTime == null ? 0.0 : 1.0,
+                            child: Icon(
+                              Icons.play_arrow,
+                              color: Colors.white,
+                              size: 24.0,
+                            ),
+                          )
                         ],
                       ),
                     ),
@@ -511,7 +583,7 @@ class GameDetailsState extends State<GameDetails> {
 
   @override
   Widget build(BuildContext context) {
-    canPlay = GameDaemon.activeGame == null;
+    canPlay = Game.runningGames.isEmpty;
     if (missingWine || missingLE) {
       canPlay = false;
     }
@@ -782,6 +854,7 @@ class GameConfigState extends State<GameConfig> {
   final _formKey = GlobalKey<FormState>();
   final _titleKey = GlobalKey<FormFieldState>();
   final _execKey = GlobalKey<FormFieldState>();
+  final _launchExecKey = GlobalKey<FormFieldState>();
   final _bgKey = GlobalKey<FormFieldState>();
   final _vndbKey = GlobalKey<FormFieldState>();
   final _vndbidKey = GlobalKey<FormFieldState>();
@@ -883,14 +956,40 @@ class GameConfigState extends State<GameConfig> {
                   padding: const EdgeInsets.all(8.0),
                   child: TextFormField(
                     key: _execKey,
-                    onSaved: (newValue) =>
-                        widget.game.exec = newValue ?? widget.game.exec,
+                    onSaved: (newValue) {
+                      Timer.instance.removeFilter(widget.game.exec);
+                      widget.game.exec = newValue ?? widget.game.exec;
+                      Timer.instance.addFilter(widget.game.exec, widget.game.id);
+                    },
                     initialValue: widget.game.exec,
                     decoration: InputDecoration(
                         border: const OutlineInputBorder(),
                         labelText: "Executable path",
                         suffixIcon: NekoPathSuffix(
                           fieldKey: _execKey,
+                          type: FileType.custom,
+                          extensions: const ["exe"],
+                        )),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: TextFormField(
+                    key: _launchExecKey,
+                    onSaved: (newValue) {
+                      if (newValue == null || newValue.isEmpty) {
+                        widget.game.launchExec = null;
+                      } else {
+                        widget.game.launchExec = newValue;
+                      }
+                    },
+                    initialValue: widget.game.launchExec,
+                    decoration: InputDecoration(
+                        border: const OutlineInputBorder(),
+                        labelText: "Launch executable path",
+                        hintText: widget.game.exec,
+                        suffixIcon: NekoPathSuffix(
+                          fieldKey: _launchExecKey,
                           type: FileType.custom,
                           extensions: const ["exe"],
                         )),
@@ -1250,6 +1349,7 @@ class GameListState extends State<GameList> {
   @override
   void initState() {
     super.initState();
+    Timer.instance.setCallback(timerCallback);
     loadGames();
   }
 
@@ -1264,11 +1364,18 @@ class GameListState extends State<GameList> {
   void loadGames() {
     Fimber.i("Loading games.");
     setState(() {
+      Timer.instance.clearFilters();
       games = [];
       gamesFolder.listSync().forEach((f) {
         if (f is File) {
           try {
-            games.add(Game(f.path, lazy: true));
+            final game = Game(f.path, lazy: true);
+            games.add(game);
+            try {
+              Timer.instance.addFilter(game.exec, game.id);
+            } catch (e) {
+              Fimber.e("Failed to add Timer filter for '${f.path}': ${e}");
+            }
           } on UpdateException catch (e) {
             Fimber.e("Failed to load ${f.path}: ${e.rootCause}");
           }
@@ -1277,6 +1384,26 @@ class GameListState extends State<GameList> {
       view = games;
       search(searchQuery);
     });
+  }
+
+  void timerCallback(bool isStarting, int processId, String processName, int? gameId) {
+    if (gameId == null) {
+      return; // No game ID, invalid callback
+    }
+
+    final game = games.firstWhere((g) => g.id == gameId);
+    if (game == null) {
+      Fimber.e("Failed to find game with id ${gameId} on Timer callback (${isStarting} ${processId} ${processName})");
+      return;
+    }
+
+    if (isStarting) {
+      Fimber.i("(Game: ${game.name}) Process matching game started - ${processId} ${processName} ${game.exec}");
+      game.started();
+    } else {
+      Fimber.i("(Game: ${game.name}) Process matching game stopped - ${processId} ${processName} ${game.exec}");
+      game.stopped();
+    }
   }
 
   @override

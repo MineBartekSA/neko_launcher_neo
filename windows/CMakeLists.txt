@@ -99,3 +99,10 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Install the AppTimer library
+set(APP_TIMER_LIBRARY "time_app_backend-logless.dll")
+# TODO: Check if library exists somewhere in build dir. If not, download. Maybe do something for updates
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../windows/${APP_TIMER_LIBRARY}"
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
